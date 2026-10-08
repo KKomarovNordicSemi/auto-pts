@@ -206,8 +206,7 @@ class Stack:
         self.rfcomm = RFCOMM()
 
     def nlcp_init(self):
-        is_provisioned_by_lt = self.nlcp.has_been_provisioned_by_lt if self.nlcp else False
-        self.nlcp = NLCP(is_provisioned_by_lt)
+        self.nlcp = NLCP(self.nlcp.node_reset_profile if self.nlcp else None)
 
     # GENERATOR append 3
 

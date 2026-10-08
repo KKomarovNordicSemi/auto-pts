@@ -13,11 +13,12 @@
 # more details.
 #
 
-"""NLC Profiles Test Cases.
+"""NLC Profile Test Suites: ALSNLCP, BLCNLCP, BSSNLCP, DICNLCP, ENMNLCP,
+HVINLCP and OCSNLCP.
 
-A single module for all of the NLC Profile Test Suites: having 7 almost
-identical script files, one per NLC Profile, is hard to maintain. The module
-is registered under the name of every supported profile at the end of the file.
+The module provides the PIXITs and the Test Cases of all seven profiles.
+At the end of the file, it is registered under the name of every profile
+listed in NLCP_TS_LIST, so the client finds it by the Test Case prefix.
 """
 
 
@@ -29,7 +30,6 @@ from autopts.ptsprojects.testcase import TestFunc, TestFuncCleanUp
 from autopts.ptsprojects.zephyr.nlcp_wid import nlcp_wid_hdl
 from autopts.ptsprojects.zephyr.ztestcase import ZTestCase
 from autopts.pybtp import btp
-from autopts.pybtp.types import BTPError
 
 # Test Suites (profiles) supported by this module.
 NLCP_TS_LIST = ("ALSNLCP", "BLCNLCP", "BSSNLCP", "DICNLCP",
@@ -41,8 +41,8 @@ NLCP_PROFILE_COMMON_PIXITS = {
     "TSPX_time_guard": "300000",
     "TSPX_use_implicit_send": "TRUE",
     "TSPX_mtu_size": "23",
-    "TSPX_delete_link_key": "TRUE",
-    "TSPX_delete_ltk": "TRUE",
+    "TSPX_delete_link_key": "FALSE",
+    "TSPX_delete_ltk": "FALSE",
     "TSPX_security_enabled": "FALSE",
     "TSPX_iut_setup_att_over_br_edr": "FALSE",
     "TSPX_scan_interval": "30",
@@ -65,13 +65,10 @@ NLCP_TC_COMMON_CLI_TIMEOUT_MS = 300000
 # Timeout duration for Performance based Test Cases, in ms.
 NLCP_TC_PERF_CLI_TIMEOUT_MS = 900000
 
-# Set of default list of actions might to be called for any single Test Case.
-NLCP_TC_COMMON_PRECONDITIONS = ("init_stack", "reset_node", "sync_identity")
-# Map of specific Test Case names or name patterns might to have modified sequence.
-NLCP_TC_CUSTOM_PRECONDITIONS = (
-    ("*/GMIT/PERF/*", NLCP_TC_COMMON_PRECONDITIONS + ("tc_perf_cli_tout",)),
-    ("*/SPEC/PROP/*", ("init_stack", "check_keys", "sync_identity")),
-)
+
+def _nlcp_pixit_update_identity(pts, profile):
+    nlcp = get_stack().nlcp
+    pts.update_pixit_param(profile, "TSPX_device_uuid", nlcp.get_identity_uuid())
 
 
 def _nlcp_get_profiles(pts):
@@ -84,70 +81,42 @@ def _nlcp_get_cli_default_timeout_ms():
     return getattr(client, "TEST_CASE_TIMEOUT_MS", NLCP_TC_COMMON_CLI_TIMEOUT_MS)
 
 
-def _nlcp_get_tc_commands(pts, profile, stack):
-    """Precondition steps of the Test Case, bound to the profile.
-
-    Every step is a factory creating new TestFunc instances on each call:
-    they keep a state and must not be shared between Test Cases.
+def _nlcp_preconditions_common(pts, profile, stack):
+    """Default preconditions: the IUT is reset once per profile, and its
+    identity is set to the PTS.
     """
-
-    return {
-        "init_stack": lambda: [TestFunc(stack.nlcp_init)],
-        "reset_node": lambda: [TestFunc(_nlcp_tc_reset_node)],
-        "check_keys": lambda: _nlcp_tc_check_keys(pts, profile),
-        "sync_identity": lambda: [TestFunc(btp.nlcp_read_identity_report),
-                                  TestFunc(lambda: _nlcp_pixit_update_identity(pts, profile))],
-        "tc_perf_cli_tout": lambda: _nlcp_tc_launch(pts, NLCP_TC_PERF_CLI_TIMEOUT_MS),
-    }
-
-
-def _nlcp_tc_decode(tc_name):
-    """Return the names of steps for a Test Case recipe."""
-    for pattern, decoded in NLCP_TC_CUSTOM_PRECONDITIONS:
-        if fnmatchcase(tc_name, pattern):
-            return decoded
-    return NLCP_TC_COMMON_PRECONDITIONS
-
-
-def _nlcp_tc_build_preconditions(commands, tc_name):
-    """Expand the recipe of the Test Case, into a direct list of commands."""
-    decoded = _nlcp_tc_decode(tc_name)
-
-    unknown_recipe = set(decoded) - commands.keys()
-    if unknown_recipe:
-        raise KeyError(f"NLCP preconditions of {tc_name}: unknown steps {sorted(unknown_recipe)}")
-
-    preconditions = []
-    for index in decoded:
-        preconditions += commands[index]()
-
-    return preconditions
-
-
-def _nlcp_tc_reset_node():
-    btp.nlcp_process_node_reset()
-    get_stack().nlcp.has_been_provisioned_by_lt = False
-
-
-def _nlcp_tc_check_keys(pts, profile):
-    """Keep the network of the LT, if the Node is still in it.
-
-    The Test Case requires the Node provisioned before it starts.
-    The keys are kept only if the LT has provisioned the Node in this session,
-    and the Node has not been reset since.
-    Otherwise, the Node is reset and the LT provisions it again.
-    """
-    def _process():
-        # Do not allow to run TC with preprovisioning conditions on IUT has not
-        # been provisioned during this session (in the same network).
-        if not get_stack().nlcp.has_been_provisioned_by_lt:
-            raise BTPError(f"{profile}: is not provisioned by the LT within this session")
-        _nlcp_pixit_update_store_keys(pts, profile, need_store=True)
-
     return [
-        TestFunc(_process),
-        TestFuncCleanUp(lambda: _nlcp_pixit_update_store_keys(pts, profile, need_store=False)),
+        TestFunc(stack.nlcp_init),
+        TestFunc(lambda: _nlcp_tc_reset_node(profile)),
+        TestFunc(btp.nlcp_read_identity_report),
+        TestFunc(lambda: _nlcp_pixit_update_identity(pts, profile)),
     ]
+
+
+def _nlcp_preconditions_gmit_perf(pts, profile, stack):
+    """Performance Test Cases: special preconditions, based on the default ones
+    with the extended client timeout.
+    """
+    return (_nlcp_preconditions_common(pts, profile, stack) +
+            _nlcp_tc_launch(pts, NLCP_TC_PERF_CLI_TIMEOUT_MS))
+
+
+# Preconditions of Test Cases, which differ from _nlcp_preconditions_common().
+# Each entry maps a Test Case name pattern (fnmatch, e.g. "BLCNLCP/BLC/GMIT/PERF/*")
+# to the function building its preconditions; the first match is used.
+# To customize a Test Case or a whole profile, define a _nlcp_preconditions_*()
+# function and add its pattern here, e.g. ("BSSNLCP/*", _nlcp_preconditions_bss).
+NLCP_TC_PRECONDITIONS = (
+    ("*/GMIT/PERF/*", _nlcp_preconditions_gmit_perf),
+)
+
+
+def _nlcp_preconditions_build(pts, profile, stack, tc_name):
+    """Build new precondition instances for the Test Case: TestFunc keeps a state."""
+    for pattern, build in NLCP_TC_PRECONDITIONS:
+        if fnmatchcase(tc_name, pattern):
+            return build(pts, profile, stack)
+    return _nlcp_preconditions_common(pts, profile, stack)
 
 
 def _nlcp_tc_launch(pts, timeout_ms):
@@ -163,15 +132,18 @@ def _nlcp_tc_launch(pts, timeout_ms):
     ]
 
 
-def _nlcp_pixit_update_identity(pts, profile):
+def _nlcp_tc_reset_node(profile):
+    """Reset the IUT before the first Test Case of each profile in the session.
+
+    PTS keeps the keys between Test Cases (TSPX_delete_link_key/ltk FALSE)
+    and provisions the IUT only when it has no keys for it, so the IUT
+    must stay in the network of the LT until the profile changes.
+    """
     nlcp = get_stack().nlcp
-    pts.update_pixit_param(profile, "TSPX_device_uuid", nlcp.get_ident_uuid())
-
-
-def _nlcp_pixit_update_store_keys(pts, profile, need_store):
-    state = "FALSE" if need_store else "TRUE"
-    for name in ("TSPX_delete_link_key", "TSPX_delete_ltk"):
-        pts.update_pixit_param(profile, name, state)
+    if nlcp.node_reset_profile == profile:
+        return
+    btp.nlcp_process_node_reset()
+    nlcp.node_reset_profile = profile
 
 
 def set_pixits(ptses):
@@ -205,13 +177,10 @@ def test_cases(ptses):
 
     # Cycle all of the supported Profiles.
     for profile in _nlcp_get_profiles(pts):
-        # Collect actions might be done before starting selected TC.
-        commands = _nlcp_get_tc_commands(pts, profile, stack)
-
         # Build a list of the Test Cases available for the profile.
         tc_list.extend(
             ZTestCase(profile, tc_name,
-                      cmds=_nlcp_tc_build_preconditions(commands, tc_name),
+                      cmds=_nlcp_preconditions_build(pts, profile, stack, tc_name),
                       generic_wid_hdl=nlcp_wid_hdl)
             for tc_name in pts.get_test_case_list(profile)
         )
