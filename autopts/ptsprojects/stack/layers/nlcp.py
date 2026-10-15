@@ -15,11 +15,11 @@
 
 
 class NLCP:
-    def __init__(self, node_reset_profile=None):
+    def __init__(self, has_been_provisioned_by_lt=False):
         self.event_queues = {}
 
-        # Profile, for which the IUT has been reset in this session.
-        self.node_reset_profile = node_reset_profile
+        # True if the PTS has provisioned the IUT after the last reset.
+        self.has_been_provisioned_by_lt = has_been_provisioned_by_lt
 
         # Identity report
         self.ident_is_valid = False

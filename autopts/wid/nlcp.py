@@ -14,7 +14,9 @@
 #
 
 import logging
+import re
 
+from autopts.ptsprojects.stack import get_stack
 from autopts.pybtp import btp
 from autopts.pybtp.types import WIDParams
 
@@ -46,6 +48,8 @@ def hdl_wid_13(_: WIDParams):
                  security information if any. PTS is waiting for beacon to
                  start provisioning from.
     """
+    # The PTS starts provisioning the IUT.
+    get_stack().nlcp.has_been_provisioned_by_lt = True
     return True
 
 
@@ -67,13 +71,18 @@ def hdl_wid_2000(_: WIDParams):
     return True
 
 
-def hdl_wid_2001(_: WIDParams):
+def hdl_wid_2001(params: WIDParams):
     """
     Implements:
     description: Perform its scene selection function for the scene at
                  position N.
     """
-    btp.nlcp_exec_scene_select()
+    match = re.search(r'position (\d+)', params.description)
+    if not match:
+        return False
+
+    btp.nlcp_exec_scene_select(int(match.group(1)))
+
     return True
 
 

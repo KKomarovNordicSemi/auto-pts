@@ -47,7 +47,7 @@ NLCP = {
                           CONTROLLER_INDEX, ""),
     'exec_scene_select': (defs.BTP_SERVICE_ID_NLCP,
                           defs.BTP_NLCP_CMD_EXEC_SCENE_SELECT,
-                          CONTROLLER_INDEX, ""),
+                          CONTROLLER_INDEX),
     'exec_dimming_ctrl': (defs.BTP_SERVICE_ID_NLCP,
                           defs.BTP_NLCP_CMD_EXEC_DIMMING_CONTROL,
                           CONTROLLER_INDEX, ""),
@@ -169,15 +169,16 @@ def nlcp_read_scene_number():
     return scene_number
 
 
-def nlcp_exec_scene_select():
-    """Request the IUT to recall the target Scene.
+def nlcp_exec_scene_select(scene_number):
+    """Request the IUT to recall a Scene with the given Number.
 
-    The IUT responds once the target Scene is recalled.
+    The IUT responds once the Scene is recalled.
     """
-    logging.debug("%s", nlcp_exec_scene_select.__name__)
+    logging.debug("%s %d", nlcp_exec_scene_select.__name__, scene_number)
 
     iutctl = get_iut()
-    iutctl.btp_socket.send_wait_rsp(*NLCP['exec_scene_select'])
+    iutctl.btp_socket.send_wait_rsp(*NLCP['exec_scene_select'],
+                                    data=struct.pack('<H', scene_number))
 
 
 def nlcp_exec_dimming_ctrl():

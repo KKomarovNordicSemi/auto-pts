@@ -30,6 +30,7 @@ from autopts.ptsprojects.testcase import TestFunc, TestFuncCleanUp
 from autopts.ptsprojects.zephyr.nlcp_wid import nlcp_wid_hdl
 from autopts.ptsprojects.zephyr.ztestcase import ZTestCase
 from autopts.pybtp import btp
+from autopts.pybtp.types import BTPError
 
 # Test Suites (profiles) supported by this module.
 NLCP_TS_LIST = ("ALSNLCP", "BLCNLCP", "BSSNLCP", "DICNLCP",
@@ -41,8 +42,8 @@ NLCP_PROFILE_COMMON_PIXITS = {
     "TSPX_time_guard": "300000",
     "TSPX_use_implicit_send": "TRUE",
     "TSPX_mtu_size": "23",
-    "TSPX_delete_link_key": "FALSE",
-    "TSPX_delete_ltk": "FALSE",
+    "TSPX_delete_link_key": "TRUE",
+    "TSPX_delete_ltk": "TRUE",
     "TSPX_security_enabled": "FALSE",
     "TSPX_iut_setup_att_over_br_edr": "FALSE",
     "TSPX_scan_interval": "30",
@@ -66,6 +67,12 @@ NLCP_TC_COMMON_CLI_TIMEOUT_MS = 300000
 NLCP_TC_PERF_CLI_TIMEOUT_MS = 900000
 
 
+def _nlcp_pixit_update_store_keys(pts, profile, need_store):
+    state = "FALSE" if need_store else "TRUE"
+    for name in ("TSPX_delete_link_key", "TSPX_delete_ltk"):
+        pts.update_pixit_param(profile, name, state)
+
+
 def _nlcp_pixit_update_identity(pts, profile):
     nlcp = get_stack().nlcp
     pts.update_pixit_param(profile, "TSPX_device_uuid", nlcp.get_identity_uuid())
@@ -81,50 +88,61 @@ def _nlcp_get_cli_default_timeout_ms():
     return getattr(client, "TEST_CASE_TIMEOUT_MS", NLCP_TC_COMMON_CLI_TIMEOUT_MS)
 
 
-def _nlcp_preconditions_common(pts, profile, stack):
-    """Default preconditions: the IUT is reset once per profile, and its
-    identity is set to the PTS.
-    """
+def _nlcp_preconditions_default(pts, profile, stack):
+    """Default Test Case: reset the IUT and pass its UUID to the PTS."""
     return [
         TestFunc(stack.nlcp_init),
-        TestFunc(lambda: _nlcp_tc_reset_node(profile)),
+        TestFunc(_nlcp_tc_reset_node),
         TestFunc(btp.nlcp_read_identity_report),
         TestFunc(lambda: _nlcp_pixit_update_identity(pts, profile)),
     ]
 
 
-def _nlcp_preconditions_gmit_perf(pts, profile, stack):
-    """Performance Test Cases: special preconditions, based on the default ones
-    with the extended client timeout.
+def _nlcp_preconditions_preprovisioned(pts, profile, stack):
+    """Preprovisioned Test Case: IUT might be preprovisioned within previous
+    Test Case, so make no reset, keys are kept.
     """
-    return (_nlcp_preconditions_common(pts, profile, stack) +
+    return [
+        TestFunc(stack.nlcp_init),
+        *_nlcp_tc_keep_keys(pts, profile),
+        TestFunc(btp.nlcp_read_identity_report),
+        TestFunc(lambda: _nlcp_pixit_update_identity(pts, profile)),
+    ]
+
+
+def _nlcp_preconditions_performance(pts, profile, stack):
+    """Performance Test Case: special preconditions for */PERF/* Test Cases,
+    based on the default ones with the extended client timeout.
+    """
+    return (_nlcp_preconditions_default(pts, profile, stack) +
             _nlcp_tc_launch(pts, NLCP_TC_PERF_CLI_TIMEOUT_MS))
 
 
-# Preconditions of Test Cases, which differ from _nlcp_preconditions_common().
-# Each entry maps a Test Case name pattern (fnmatch, e.g. "BLCNLCP/BLC/GMIT/PERF/*")
-# to the function building its preconditions; the first match is used.
-# To customize a Test Case or a whole profile, define a _nlcp_preconditions_*()
-# function and add its pattern here, e.g. ("BSSNLCP/*", _nlcp_preconditions_bss).
+# Test Cases with preconditions different from _nlcp_preconditions_default().
+# Each entry is a Test Case name pattern and the function with its preconditions.
+# The first matching pattern is used.
+# To add a new case, write a _nlcp_preconditions_*() function and add it here,
+# e.g. ("BSSNLCP/*", _nlcp_preconditions_bss).
 NLCP_TC_PRECONDITIONS = (
-    ("*/GMIT/PERF/*", _nlcp_preconditions_gmit_perf),
+    ("*/GMIT/PERF/*", _nlcp_preconditions_performance),
+    ("*/SPEC/PROP/*", _nlcp_preconditions_preprovisioned),
 )
 
 
 def _nlcp_preconditions_build(pts, profile, stack, tc_name):
-    """Build new precondition instances for the Test Case: TestFunc keeps a state."""
+    """Return new steps for the Test Case. Steps can not be shared between Test
+    Cases.
+    """
     for pattern, build in NLCP_TC_PRECONDITIONS:
         if fnmatchcase(tc_name, pattern):
             return build(pts, profile, stack)
-    return _nlcp_preconditions_common(pts, profile, stack)
+    return _nlcp_preconditions_default(pts, profile, stack)
 
 
 def _nlcp_tc_launch(pts, timeout_ms):
-    """Raise the PTS call timeout for one test case and restore it after.
+    """Set a longer PTS timeout for this Test Case.
 
-    set_call_timeout() stays in effect for the whole PTS session, so the
-    cleanup is needed to keep the following test cases on the default.
-    TestFuncCleanUp runs in post_run even after FAIL or PTS TIMEOUT.
+    The timeout is set back to default after the Test Case, even if it fails.
     """
     return [
         TestFunc(lambda: pts.set_call_timeout(timeout_ms)),
@@ -132,18 +150,28 @@ def _nlcp_tc_launch(pts, timeout_ms):
     ]
 
 
-def _nlcp_tc_reset_node(profile):
-    """Reset the IUT before the first Test Case of each profile in the session.
+def _nlcp_tc_keep_keys(pts, profile):
+    """Keep the PTS keys for this Test Case.
 
-    PTS keeps the keys between Test Cases (TSPX_delete_link_key/ltk FALSE)
-    and provisions the IUT only when it has no keys for it, so the IUT
-    must stay in the network of the LT until the profile changes.
+    Works only if the PTS has provisioned the IUT before, in this session.
+    Otherwise, the Test Case fails with BTP ERROR.
+    After the Test Case, the PIXITs are set back to default.
     """
-    nlcp = get_stack().nlcp
-    if nlcp.node_reset_profile == profile:
-        return
+    def _process():
+        if not get_stack().nlcp.has_been_provisioned_by_lt:
+            raise BTPError(f"{profile}: is not provisioned within this session")
+        _nlcp_pixit_update_store_keys(pts, profile, need_store=True)
+
+    return [
+        TestFunc(_process),
+        TestFuncCleanUp(lambda: _nlcp_pixit_update_store_keys(pts, profile, need_store=False)),
+    ]
+
+
+def _nlcp_tc_reset_node():
+    """Reset the IUT before the Test Case."""
     btp.nlcp_process_node_reset()
-    nlcp.node_reset_profile = profile
+    get_stack().nlcp.has_been_provisioned_by_lt = False
 
 
 def set_pixits(ptses):
