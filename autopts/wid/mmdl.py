@@ -19,11 +19,16 @@ import struct
 import time
 
 from autopts.ptsprojects.stack import get_stack
+from autopts.ptsprojects.stack.common import wait_for_event
 from autopts.pybtp import btp
 from autopts.pybtp.types import WIDParams
 
 # MMDL ATS ver. 1.0
 log = logging.debug
+
+# Define address for the Subscription List during the BLOB Transfer Test Cases
+# within the MBTM Test Suite.
+BLOB_GROUP_ADDR = 0xC000
 
 
 def mmdl_wid_hdl(wid, description, test_case_name):
@@ -85,11 +90,29 @@ def hdl_wid_304(_: WIDParams):
     return True
 
 
-def hdl_wid_346(_: WIDParams):
+def hdl_wid_346(params: WIDParams):
     """
     Implements:
     description: Please send Friend Subscription List Add message to Lower Tester.
     """
+    if not params.test_case_name.startswith("MBTM"):
+        return True
+
+    # Since PTS 8.14, the MBTM Test Cases establish the friendship before the
+    # BLOB Transfer Server model is subscribed to the group address.
+    # The IUT transmits Friend Subscription List Add only for the groups in its
+    # LPN subscription list, and without this call the group is there only if a
+    # previous Test Case has left it, so the result would depend on the order
+    # of the Test Cases.
+    # If the group is already in the list, the IUT does not transmit the
+    # message again.
+    stack = get_stack()
+
+    log("MBTM: subscribing LPN to 0x%04x", BLOB_GROUP_ADDR)
+    btp.mesh_lpn_subscribe(BLOB_GROUP_ADDR)
+
+    if BLOB_GROUP_ADDR not in stack.mesh.lpn_subscriptions:
+        stack.mesh.lpn_subscriptions.append(BLOB_GROUP_ADDR)
 
     return True
 
@@ -2233,15 +2256,26 @@ def hdl_wid_851(_: WIDParams):
 
 def hdl_wid_852(params: WIDParams):
     """
-    'Please confirm IUT has received 0x1000 bytes of data.'
+    Implements:
+    description: Please confirm IUT has received 0x1000 bytes of data.
     """
     stack = get_stack()
 
     to_rx = int(re.findall(r'0x([0-9A-F]{2,})', params.description)[0], 16)
-    # Give some time so last mesh_model_recv_ev's are processed
-    time.sleep(5)
 
-    return stack.mesh.blob_rxed_bytes == to_rx
+    if not params.test_case_name.startswith("MBTM"):
+        # Keep the previous WID processing for Test Cases outside the MBTM Test
+        # Suite.
+        time.sleep(5)
+        return stack.mesh.blob_rxed_bytes == to_rx
+
+    # Wait until all of the chunks are processed.
+    # Fixed delay is not acceptable here: while this MMI is `open`, PTS
+    # does not process incoming traffic. This behavior is critical for the Test
+    # Cases where the IUT is a Low Power Node: a delay of several seconds makes
+    # the Friend miss all the Friend Polls and, due to this, the IUT will
+    # terminate the friendship.
+    return wait_for_event(5, lambda: stack.mesh.blob_rxed_bytes == to_rx)
 
 
 def hdl_wid_853(_: WIDParams):
